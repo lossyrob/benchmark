@@ -1,0 +1,12 @@
+---
+- name: Checkout geotrellis
+  sudo: no
+  git: repo={{ geotrellis_git_url }} version={{ geotrellis_git_branch }} dest={{ geotrellis_git_path }} 
+
+- name: Publish local
+  sudo: no
+  shell: 'cd {{ geotrellis_git_path }}; {{ item }}'
+  with_items:
+    - ./publish-local.sh
+    - ./sbt "project gdal" publish-local
+
