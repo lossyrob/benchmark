@@ -42,7 +42,7 @@ end
 
 Vagrant.configure("2") do |config|
   config.vm.box = "ubuntu/trusty64"
-  config.vm.box_check_update = false
+  config.vm.box_check_update = true
   config.ssh.username = "vagrant"
 
   config.vm.define "default" do |worker|

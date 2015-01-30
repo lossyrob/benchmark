@@ -1,4 +1,3 @@
-azavea.java,0.1.0
 azavea.libgdal-java,0.1.0
 azavea.git,0.1.0
 
