@@ -18,13 +18,11 @@ object HDFSIngest extends ArgMain[HadoopIngestArgs] with Logging {
   def main(args: HadoopIngestArgs): Unit = {
     System.setProperty("com.sun.media.jai.disableMediaLib", "true")
 
-
     implicit val sparkContext = SparkUtils.createSparkContext("Ingest")
     val conf = sparkContext.hadoopConfiguration
     conf.set("io.map.index.interval", "1")
 
     val source = sparkContext.netCdfRDD(args.inPath).repartition(12);
-
     val layoutScheme = ZoomedLayoutScheme(256)
     Ingest[NetCdfBand, SpaceTimeKey](source, args.destCrs, layoutScheme, true){ (rdd, level) =>
       val catalog = HadoopRasterCatalog(args.catalogPath)
