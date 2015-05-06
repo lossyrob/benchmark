@@ -22,6 +22,7 @@ import org.apache.spark._
 import com.quantifind.sumac.ArgMain
 import com.github.nscala_time.time.Imports._
 import com.typesafe.scalalogging.slf4j.LazyLogging
+import geotrellis.spark.io.index._
 
 /** Ingests the chunked NEX GeoTIFF data */
 object NexHdfsIngest extends ArgMain[HadoopIngestArgs] with LazyLogging {
@@ -46,7 +47,8 @@ object NexHdfsIngest extends ArgMain[HadoopIngestArgs] with LazyLogging {
 
     val catalog = HadoopCatalog(sparkContext, args.catalogPath)
     Ingest[SpaceTimeInputKey, SpaceTimeKey](source, args.destCrs, layoutScheme){ (rdd, level) =>
-      catalog.save(LayerId(args.layerName, level.zoom), rdd, true)
+      val catalog = HadoopRasterCatalog(args.catalogPath)
+      catalog.writer[SpaceTimeKey](ZCurveKeyIndexMethod.byYear).write(LayerId(args.layerName, level.zoom), rdd)
     }
   }
 }

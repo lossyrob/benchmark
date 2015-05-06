@@ -85,13 +85,18 @@ object Extents extends GeoJsonSupport {
 object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
   import Extents._
 
-  def getRdd(catalog: AccumuloCatalog, id: LayerId, polygon: Polygon, name: String): RasterRDD[SpaceTimeKey] = {
-    val (lmd, params) = catalog.metaDataCatalog.load(id)
-    val md = lmd.rasterMetaData
-    println(s"getRDD MD: $md")
-    val bounds = md.mapTransform(polygon.envelope)
+  def getRdd(
+    catalog: AccumuloRasterCatalog,
+    id: LayerId,
+    polygon: Polygon,
+    name: String
+  ): RasterRDD[SpaceTimeKey] = {
+    val lmd = catalog.accumuloAttributeStore.read[AccumuloLayerMetaData](id, "metadata")
+    val rmd = lmd.rasterMetaData
+    println(s"getRDD RMD: $rmd")
+    val bounds = rmd.mapTransform(polygon.envelope)
     println(s"getRDD GridBounds: $bounds")
-    val rdd = catalog.load[SpaceTimeKey](id, FilterSet(SpaceFilter[SpaceTimeKey](bounds)))
+    val rdd = catalog.reader[SpaceTimeKey].read(id, FilterSet(SpaceFilter[SpaceTimeKey](bounds)))
     rdd.setName(name)
     rdd
   }
@@ -139,8 +144,8 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
 
   def main(args: BenchmarkArgs): Unit = {
     implicit val sparkContext = SparkUtils.createSparkContext("Benchmark")
-    val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
-    val catalog = accumulo.catalog
+    implicit val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
+    val catalog = AccumuloRasterCatalog("metadata")
     val layers = args.getLayers
     // for {
     //   (name, polygon) <- extents

@@ -7,6 +7,7 @@ import geotrellis.spark.ingest.{Ingest, Pyramid, AccumuloIngestArgs}
 import geotrellis.spark.io.hadoop._
 import geotrellis.spark.io.hadoop.formats._
 import geotrellis.spark.utils.SparkUtils
+import geotrellis.spark.io.index._
 
 import org.apache.accumulo.core.client.security.tokens.PasswordToken
 import org.apache.spark._
@@ -18,12 +19,13 @@ object AccumuloIngestCommand extends ArgMain[AccumuloIngestArgs] with Logging {
 
     implicit val sparkContext = SparkUtils.createSparkContext("Ingest")
 
-    val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
+    implicit val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
     val source = sparkContext.netCdfRDD(args.inPath).repartition(args.partitions)
 
     val layoutScheme = ZoomedLayoutScheme(64)
     Ingest[NetCdfBand, SpaceTimeKey](source, args.destCrs, layoutScheme, args.pyramid){ (rdd, level) =>
-      accumulo.catalog.save(LayerId(args.layerName, level.zoom), args.table, rdd, args.clobber)
+      val catalog = AccumuloRasterCatalog("metadata")
+      catalog.writer[SpaceTimeKey](ZCurveKeyIndexMethod.byYear, args.table).write(LayerId(args.layerName, level.zoom), rdd)
     }
   }
 }

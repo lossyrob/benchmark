@@ -18,6 +18,7 @@ import com.quantifind.sumac.ArgMain
 import com.github.nscala_time.time.Imports._
 import com.typesafe.scalalogging.slf4j.LazyLogging
 import com.quantifind.sumac.validation.Required
+import geotrellis.spark.io.index._
 
 class NexIngestArgs extends AccumuloIngestArgs {
   @Required var s3PageSize: Integer = _
@@ -31,7 +32,7 @@ object NEXIngest extends ArgMain[NexIngestArgs] with LazyLogging {
     implicit val sparkContext = SparkUtils.createSparkContext("Ingest")
     val job = sparkContext.newJob
 
-    val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
+    implicit val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
     val layoutScheme = ZoomedLayoutScheme()
 
     // Get source tiles
@@ -47,7 +48,8 @@ object NEXIngest extends ArgMain[NexIngestArgs] with LazyLogging {
       )
 
     Ingest[SpaceTimeInputKey, SpaceTimeKey](source, args.destCrs, layoutScheme){ (rdd, level) =>
-      accumulo.catalog.save(LayerId(args.layerName, level.zoom), args.table, rdd, args.clobber)
+      val catalog = AccumuloRasterCatalog("metadata")
+      catalog.writer[SpaceTimeKey](ZCurveKeyIndexMethod.byYear, args.table).write(LayerId(args.layerName, level.zoom), rdd)
     }
   }
 }

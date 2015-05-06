@@ -6,6 +6,7 @@ import geotrellis.spark.io.hadoop._
 import geotrellis.spark.ingest.{Ingest, Pyramid, HadoopIngestArgs}
 import geotrellis.spark.io.hadoop.formats._
 import geotrellis.spark.utils.SparkUtils
+import geotrellis.spark.io.index._
 
 import org.apache.spark._
 import com.quantifind.sumac.ArgMain
@@ -22,12 +23,12 @@ object HDFSIngest extends ArgMain[HadoopIngestArgs] with Logging {
     val conf = sparkContext.hadoopConfiguration
     conf.set("io.map.index.interval", "1")
 
-    val catalog: HadoopCatalog = HadoopCatalog(sparkContext, args.catalogPath)
     val source = sparkContext.netCdfRDD(args.inPath).repartition(12);
 
     val layoutScheme = ZoomedLayoutScheme(256)
     Ingest[NetCdfBand, SpaceTimeKey](source, args.destCrs, layoutScheme, true){ (rdd, level) =>
-      catalog.save(LayerId(args.layerName, level.zoom), rdd, true)
+      val catalog = HadoopRasterCatalog(args.catalogPath)
+      catalog.writer[SpaceTimeKey](ZCurveKeyIndexMethod.byYear).write(LayerId(args.layerName, level.zoom), rdd)
     }
   }
 }
