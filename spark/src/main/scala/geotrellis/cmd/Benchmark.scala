@@ -85,8 +85,18 @@ object Extents extends GeoJsonSupport {
 object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
   import Extents._
 
-  def getRdd(catalog: AccumuloRasterCatalog, id: LayerId, polygon: Polygon, name: String): RasterRDD[SpaceTimeKey] = {
-    val rdd = catalog.reader[SpaceTimeKey].read(id)
+  def getRdd(
+    catalog: AccumuloRasterCatalog,
+    id: LayerId,
+    polygon: Polygon,
+    name: String
+  ): RasterRDD[SpaceTimeKey] = {
+    val lmd = catalog.accumuloAttributeStore.read[AccumuloLayerMetaData](id, "metadata")
+    val rmd = lmd.rasterMetaData
+    println(s"getRDD RMD: $rmd")
+    val bounds = rmd.mapTransform(polygon.envelope)
+    println(s"getRDD GridBounds: $bounds")
+    val rdd = catalog.reader[SpaceTimeKey].read(id, FilterSet(SpaceFilter[SpaceTimeKey](bounds)))
     rdd.setName(name)
     rdd
   }
