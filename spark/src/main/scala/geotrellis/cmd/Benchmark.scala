@@ -177,10 +177,17 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
       //     rdds.head.combineTiles(rdds.tail)(local.Mean.apply)
       //     .foreachPartition(_ => {})
       // }
+
+      Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-Average, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+        val diff = rdds(1) localSubtract rdds(0)
+        val avg = annualAverage(diff)
+        logger.info(s"YEARLY AVERAGE OF DIFFERENCES ${avg}")
+      }
+
       var diff:RasterRDD[SpaceTimeKey] = null
       Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-fresh, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
         diff = rdds(1) localSubtract rdds(0)
-        diff.foreachPartition(_ => {})
+        diff.foreachPartition(_ => ())
       }
       Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-count, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
         logger.info(s"RECORD COUNT: ${diff.count}")
