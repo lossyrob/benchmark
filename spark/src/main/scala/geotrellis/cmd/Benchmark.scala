@@ -7,6 +7,7 @@ import geotrellis.spark.cmd.args._
 import geotrellis.spark.ingest.IngestArgs
 import geotrellis.spark.io.hadoop._
 import geotrellis.spark.io.accumulo._
+import geotrellis.spark.io.index._
 import geotrellis.spark.op.stats._
 import geotrellis.spark.utils.SparkUtils
 import geotrellis.proj4._
@@ -88,6 +89,16 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
   def getRdd(
     catalog: AccumuloRasterCatalog,
     id: LayerId,
+    name: String
+  ): RasterRDD[SpaceTimeKey] = {
+    val rdd = catalog.reader[SpaceTimeKey].read(id)
+    rdd.setName(name)
+    rdd
+  }
+
+  def getRdd(
+    catalog: AccumuloRasterCatalog,
+    id: LayerId,
     polygon: Polygon,
     name: String
   ): RasterRDD[SpaceTimeKey] = {
@@ -128,7 +139,7 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
         (tup1._1 + tup2._1) -> (tup1._2 + tup2._2)
       }
       .collect
-      .map{ case (year, (sum, count)) =>
+      .map { case (year, (sum, count)) =>
         year -> sum/count
       }
   }
@@ -147,52 +158,99 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
     implicit val accumulo = AccumuloInstance(args.instance, args.zookeeper, args.user, new PasswordToken(args.password))
     val catalog = AccumuloRasterCatalog("metadata")
     val layers = args.getLayers
-    // for {
-    //   (name, polygon) <- extents
-    //   count <- 1 to 4
-    // } {
-    //   val rdd = getRdd(catalog, layers.head, polygon, name)
-    //   Timer.timedTask(s"""Benchmark: {type: LoadTiles, name: $name}""", s => logger.info(s)){
-    //     logger.info(s"Stats: $name = (${stats(rdd)})")
-    //   }
-
-    //   Timer.timedTask(s"""Benchmark: {type: AnnualZonalSummary, name: $name}""", s => logger.info(s)) {
-    //     zonalSummary(rdd, polygon)
-    //   }
-    // }
 
     for {
       (name, polygon) <- extents
     } {
-      val rdds = layers.map { layer => getRdd(catalog, layer, polygon, name)}
+      def rdd1 = getRdd(catalog, layers(0), polygon, name)
+      def rdd2 = getRdd(catalog, layers(1), polygon, name)
 
-      // Timer.timedTask(s"""Benchmark: {type: MultiModel-averageByKey, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
-      //   new RasterRDD[SpaceTimeKey](rdds.reduce(_ union _), rdds.head.metaData)
-      //     .averageByKey
-      //     .foreachPartition(_ => {})
-      // }
+      Timer.timedTask(s"""Benchmark: {type: SingleModel-MinMax, name: $name }""", s=> logger.info(s)) {
+        val (min, max) = rdd1.minMax
 
-      // Timer.timedTask(s"""Benchmark: {type: MultiModel-combineTiles(local.Mean), name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
-      //   new RasterRDD[SpaceTimeKey](rdds.reduce(_ union _), rdds.head.metaData)
-      //     rdds.head.combineTiles(rdds.tail)(local.Mean.apply)
-      //     .foreachPartition(_ => {})
-      // }
+        logger.info(s"SINGLE MODEL MIN MAX: ${(min, max)}")
+      }
+
+      Timer.timedTask(s"""Benchmark: {type: SingleModel-Average, name: $name }""", s=> logger.info(s)) {
+        val avg = annualAverage(rdd1)
+
+        logger.info(s"SINGLE MODEL YEARLY AVERAGE OF DIFFERENCES ${avg}")
+      }
 
       Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-Average, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
-        val diff = rdds(1) localSubtract rdds(0)
+        val diff = rdd2 localSubtract rdd1
         val avg = annualAverage(diff)
-        logger.info(s"YEARLY AVERAGE OF DIFFERENCES ${avg}")
+
+        logger.info(s"MULTI MODEL AVERAGE ${avg}")
       }
 
-      var diff:RasterRDD[SpaceTimeKey] = null
-      Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-fresh, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
-        diff = rdds(1) localSubtract rdds(0)
-        diff.foreachPartition(_ => ())
+      Timer.timedTask(s"""Benchmark: {type: MultiModel-localMean-MinMax, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+        val diff = Seq(rdd1, rdd2) localMean
+        val minMax = diff.minMax
+
+        logger.info(s"MUTLI MODEL MIN MAX ${minMax}")
       }
+
       Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-count, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
-        logger.info(s"RECORD COUNT: ${diff.count}")
+        val diff = rdd2 localSubtract rdd1
+        val count = diff.count
+
+        logger.info(s"LOCAL SUBTRACT RECORD COUNT: ${count}")
       }
 
+      Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-ZonalSummary, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
+        val diff = rdd2 localSubtract rdd1
+        val summary = diff.zonalMean(polygon)
+
+        logger.info(s"LOCAL SUBTRACT ZONAL MEAN $summary")
+      }
+    }
+
+    // Run benchmarks that do not filter
+    val name = "unbounded"
+    def rdd1 = getRdd(catalog, layers(0), name)
+    def rdd2 = getRdd(catalog, layers(1), name)
+
+    Timer.timedTask(s"""Benchmark: {type: SingleModel-MinMax, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+      val (min, max) = rdd1.minMax
+
+      logger.info(s"SINGLE MODEL MIN MAX: ${(min, max)}")
+    }
+
+    Timer.timedTask(s"""Benchmark: {type: SingleModel-Average, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+      val avg = annualAverage(rdd1)
+
+      logger.info(s"SINGLE MODEL YEARLY AVERAGE OF DIFFERENCES ${avg}")
+    }
+
+    Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-Average, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+      val diff = rdd2 localSubtract rdd1
+      val avg = annualAverage(diff)
+
+      logger.info(s"MULTI MODEL YEARLY AVERAGE $avg")
+    }
+
+    Timer.timedTask(s"""Benchmark: {type: MultiModel-localMean-MinMax, name: $name, layers: ${layers.toList}}""", s=> logger.info(s)) {
+      val diff = Seq(rdd1, rdd2) localMean
+      val minMax = diff.minMax
+
+      logger.info(s"MULTI MODEL MIN MAX ${minMax}")
+    }
+
+    Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-count, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
+      val diff = rdd2 localSubtract rdd1
+      val count = diff.count
+
+      logger.info(s"LOCAL SUBTRACT RECORD COUNT: ${count}")
+    }
+
+    Timer.timedTask(s"""Benchmark: {type: MultiModel-localSubtract-save, name: $name, layers: ${layers.toList}}""", s => logger.info(s)) {
+      val diff = rdd2 localSubtract rdd1
+
+      val layerId = LayerId("benchmark-output", 8)
+      catalog.writer[SpaceTimeKey](ZCurveKeyIndexMethod.byYear, "benchmarkoutput").write(layerId, diff)
+
+      logger.info(s"LOCAL SUBTRACT WRITE TO CATALOG: done.")
     }
   }
 }
