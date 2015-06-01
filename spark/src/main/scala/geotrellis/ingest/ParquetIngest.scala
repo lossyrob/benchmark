@@ -2,6 +2,7 @@ package climate.ingest
 
 import geotrellis.spark._
 import geotrellis.spark.ingest.NetCDFIngestCommand._
+import climate.cmd._
 
 import geotrellis.spark.tiling._
 import geotrellis.spark.io._
@@ -24,6 +25,7 @@ import com.github.nscala_time.time.Imports._
 import com.typesafe.scalalogging.slf4j.LazyLogging
 import com.quantifind.sumac.validation.Required
 import geotrellis.spark.io.index._
+import org.apache.spark.storage.StorageLevel
 
 import spray.json._
 import DefaultJsonProtocol._
@@ -94,19 +96,13 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
     s
   }
 
-  def main(args: ParquetArgs): Unit = {
-
-    val sc = SparkUtils.createSparkContext("Parquet-Ingest")
-    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+  def ingestSpaceTimeKey(sc: SparkContext, sqlContext: SQLContext, args: ParquetArgs): Unit = {
 
     import sqlContext.implicits._
 
-    sc.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
-      "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
-    sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
-    sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
+    val baseOutput = s"${args.output}/spacetime/"
 
-    val sourceTiles = sc.binaryFiles("/home/cbrown/Downloads/one-month-tiles/*.tif").map{ case(inputKey, b) =>
+    val sourceTiles = sc.binaryFiles(args.input).map{ case(inputKey, b) =>
       val geoTiff = GeoTiffReader.read(b.toArray)
       val meta = geoTiff.metaData
       val isoString = geoTiff.tags("ISO_TIME")
@@ -127,6 +123,7 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
       }
 
     val rasterRdd = SpaceTimeInputKey.tiler(reprojectedTiles, rasterMetaData)
+    rasterRdd.persist(StorageLevel.MEMORY_AND_DISK)
     val keyBounds = implicitly[Boundable[SpaceTimeKey]].getKeyBounds(rasterRdd)
     val keyIndexMethod = ZCurveKeyIndexMethod.byYear
 
@@ -139,23 +136,106 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
 
     val layerId = LayerId(args.layerName, 8)
 
-    val rasterCellDF = rasterRdd.flatMap{ case (k, t) =>
-      tile2cells(k, t)
-    }.toDF()
+    Timer.timedTask("Saving Parquet Raster Tiles: STK", s => logger.info(s)) {
+      val rasterDFBinary = rasterRdd.map{case (k, t) =>
+        val bytes = KryoSerializer.serialize[Tile](t)
+        TileRow(k.row, k.col, k.time.getMillis, keyIndex.toIndex(k), bytes)
+      }.toDF()
+      val climateRasterOutStr = s"$baseOutput/rasterData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      rasterDFBinary.save(climateRasterOutStr, "parquet")
+    }
 
-    val rasterDFBinary = rasterRdd.map{case (k, t) =>
-      val bytes = KryoSerializer.serialize[Tile](t)
-      TileRow(k.row, k.col, k.time.getMillis, keyIndex.toIndex(k), bytes)
-    }.toDF()
+    Timer.timedTask("Saving Raster Cell DataFrame: STK", s => logger.info(s)) {
+      val rasterCellDF = rasterRdd.flatMap{ case (k, t) =>
+        tile2cells(k, t)
+      }.toDF()
+      val climateRasterCellOutStr =
+        s"$baseOutput/rasterCellData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      rasterCellDF.save(climateRasterCellOutStr, "parquet")
+    }
 
-    val rmdDF = sc.parallelize(Seq(RMD(rasterMetaData.toJson.toString))).toDF()
-
-    val climateRasterOutStr = s"${args.output}/rasterTileData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-    val climateRMDOutStr = s"${args.output}/rasterMetaData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-    val climateRasterCellOutStr = s"${args.output}/rasterCellData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-    rasterDFBinary.save(climateRasterOutStr, "parquet")
-    rmdDF.save(climateRMDOutStr, "parquet")
-    rasterCellDF.save(climateRasterCellOutStr, "parquet")
+    Timer.timedTask("Saving RasterMetaData: STK", s => logger.info(s)) {
+      val climateRMDOutStr = s"$baseOutput/rasterMetaData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      val rmdDF = sc.parallelize(Seq(RMD(rasterMetaData.toJson.toString))).toDF()
+      rmdDF.save(climateRMDOutStr, "parquet")
+    }
   }
 
+  def ingestSpatialKey(sc: SparkContext, sqlContext: SQLContext, args: ParquetArgs): Unit = {
+
+    import sqlContext.implicits._
+
+    val baseOutput = s"${args.output}/spacetime/"
+
+    val sourceTiles = sc.binaryFiles(args.input).map{ case(inputKey, b) =>
+      val geoTiff = GeoTiffReader.read(b.toArray)
+      val meta = geoTiff.metaData
+      val isoString = geoTiff.tags("ISO_TIME")
+      val dateTime = DateTime.parse(isoString)
+      val GeoTiffBand(tile, extent, crs, _) = geoTiff.bands.head
+      (SpaceTimeInputKey(extent, crs, dateTime), tile)
+    }
+
+    val destCrs = args.destCrs
+
+    val reprojectedTiles = sourceTiles.reproject(destCrs)
+    val layoutScheme = ZoomedLayoutScheme()
+    val isUniform = false
+
+    var (layoutLevel, rasterMetaData) =
+      RasterMetaData.fromRdd(reprojectedTiles, destCrs, layoutScheme, isUniform) { key =>
+        key.projectedExtent.extent
+      }
+
+    val rasterRdd = SpaceTimeInputKey.tiler(reprojectedTiles, rasterMetaData)
+    rasterRdd.persist(StorageLevel.MEMORY_AND_DISK)
+    val keyBounds = implicitly[Boundable[SpaceTimeKey]].getKeyBounds(rasterRdd)
+    val keyIndexMethod = ZCurveKeyIndexMethod.byYear
+
+    val imin = keyBounds.minKey.updateSpatialComponent(SpatialKey(0, 0))
+    val imax = keyBounds.maxKey.updateSpatialComponent(
+      SpatialKey(rasterMetaData.tileLayout.layoutCols - 1,
+        rasterMetaData.tileLayout.layoutRows - 1))
+    val indexKeyBounds = KeyBounds(imin, imax)
+    val keyIndex = keyIndexMethod.createIndex(indexKeyBounds)
+
+    val layerId = LayerId(args.layerName, 8)
+
+    Timer.timedTask("Saving Parquet Raster Tiles: STK", s => logger.info(s)) {
+      val rasterDFBinary = rasterRdd.map{case (k, t) =>
+        val bytes = KryoSerializer.serialize[Tile](t)
+        TileRow(k.row, k.col, k.time.getMillis, keyIndex.toIndex(k), bytes)
+      }.toDF()
+      val climateRasterOutStr = s"$baseOutput/rasterData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      rasterDFBinary.save(climateRasterOutStr, "parquet")
+    }
+
+    Timer.timedTask("Saving Raster Cell DataFrame: STK", s => logger.info(s)) {
+      val rasterCellDF = rasterRdd.flatMap{ case (k, t) =>
+        tile2cells(k, t)
+      }.toDF()
+      val climateRasterCellOutStr =
+        s"$baseOutput/rasterCellData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      rasterCellDF.save(climateRasterCellOutStr, "parquet")
+    }
+
+    Timer.timedTask("Saving RasterMetaData: STK", s => logger.info(s)) {
+      val climateRMDOutStr = s"$baseOutput/rasterMetaData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
+      val rmdDF = sc.parallelize(Seq(RMD(rasterMetaData.toJson.toString))).toDF()
+      rmdDF.save(climateRMDOutStr, "parquet")
+    }
+  }
+
+  def main(args: ParquetArgs): Unit = {
+
+    val sc = SparkUtils.createSparkContext("Parquet-Ingest")
+    val sqlContext = new org.apache.spark.sql.SQLContext(sc)
+
+    sc.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
+      "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
+    sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
+    sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
+
+    ingestSpaceTimeKey(sc, sqlContext, args)
+  }
 }
