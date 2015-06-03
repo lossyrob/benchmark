@@ -12,7 +12,7 @@ object Version {
 
   val geotrellis  = "0.10.0-SNAPSHOT"
   val scala       = "2.10.4"
-  val spark       = "1.3.1"
+  val spark       = "1.4.0-SNAPSHOT"
 }
 
 object BenchmarkBuild extends Build {
@@ -26,7 +26,8 @@ object BenchmarkBuild extends Build {
     "maven2 dev repository"   at "http://download.java.net/maven/2",
     "Typesafe Repo"           at "http://repo.typesafe.com/typesafe/releases/",
     "spray repo"              at "http://repo.spray.io/",
-    "sonatypeSnapshots"       at "http://oss.sonatype.org/content/repositories/snapshots"
+    "sonatypeSnapshots"       at "http://oss.sonatype.org/content/repositories/snapshots",
+    "sparksnapshots" at "https://repository.apache.org/content/repositories/snapshots/org/apache/spark/"
   )
 
   // Default settings

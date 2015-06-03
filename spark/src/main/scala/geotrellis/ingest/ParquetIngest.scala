@@ -50,7 +50,9 @@ class ParquetArgs extends IngestArgs {
 
 object ParquetRasterMetaDataReader {
 
-  def read(sqlContext: SQLContext, path: String): scala.collection.Map[String, (RasterMetaData, KeyBounds[SpaceTimeKey])] = {
+  def read(path: String)(implicit sqlContext: SQLContext): scala.collection.Map[String,
+    (RasterMetaData, KeyBounds[SpaceTimeKey])] = {
+
     val rasterMetaDataRDD = sqlContext.load(path, "parquet").rdd.map{ case Row(rmd, kb, zoomLevel, layerName) =>
       val rasterMetaData = rmd.asInstanceOf[String].parseJson.convertTo[RasterMetaData]
       val keyBounds = kb.asInstanceOf[String].parseJson.convertTo[KeyBounds[SpaceTimeKey]]
@@ -69,10 +71,13 @@ object ParquetRasterMetaDataReader {
 }
 
 
-// Get dataframes which will have row, col, time (millis), tile
-object ParquetRasterReader {
 
-  def getFilterRanges(filterSet: FilterSet[SpaceTimeKey], keyBounds: KeyBounds[SpaceTimeKey], keyIndex: KeyIndex[SpaceTimeKey]): Seq[(Long, Long)] = {
+// Get dataframes which will have row, col, time (millis), tile
+object ParquetRasterReader extends LazyLogging {
+
+  def getFilterRanges(filterSet: FilterSet[SpaceTimeKey], keyBounds: KeyBounds[SpaceTimeKey],
+    keyIndex: KeyIndex[SpaceTimeKey]): Seq[(Long, Long)] = {
+
     val spaceFilters = mutable.ListBuffer[GridBounds]()
     val timeFilters = mutable.ListBuffer[(DateTime, DateTime)]()
 
@@ -108,23 +113,54 @@ object ParquetRasterReader {
   def applyFilterRanges(df: DataFrame, filterRanges: Seq[(Long, Long)]): DataFrame = {
 
     def applyFilterRange(df: DataFrame, floor: Long, ceiling: Long): DataFrame =
-      df.filter($"zIndex" >= floor).filter($"zIndex" <= ceiling)
+      df.filter(df("zIndex") >= floor).filter(df("zIndex") <= ceiling)
 
     filterRanges match {
-      case (floor, ceiling) :: Nil => applyFilterRange(df, floor, ceiling)
-      case (floor, ceiling) :: tail => applyFilterRanges(applyFilterRange(df, floor, ceiling), tail)
+      case Seq() => df
+      case (floor, ceiling) +: tail => applyFilterRanges(applyFilterRange(df, floor, ceiling), tail)
     }
 
   }
 
-  def readRaster(path: String, keyBounds: KeyBounds[SpaceTimeKey], rasterMetaData: RasterMetaData,
-    filterGridBounds: GridBounds, layerId: LayerId): Unit = {
+  def readRasterZCurve(path: String, keyBounds: KeyBounds[SpaceTimeKey],
+    rasterMetaData: RasterMetaData, polygon: Polygon)(implicit sqlContext: SQLContext): DataFrame = {
 
+    // Create filterset for grid bounds
+    logger.info("Getting Grid Bounds")
+    val filterGridBounds = rasterMetaData.mapTransform(polygon.envelope)
+
+    logger.info("ConstructingFilterSet")
     val filterSet = FilterSet(SpaceFilter[SpaceTimeKey](filterGridBounds))
+
     val keyIndex = ZCurveKeyIndexMethod.byYear.createIndex(keyBounds)
+    // Get filter ranges
+
+    logger.info("Getting Filter Ranges")
     val stkFilterRanges = getFilterRanges(filterSet, keyBounds, keyIndex)
 
+    logger.info("Reading DataFrame")
+    val df = sqlContext.load(path, "parquet")
+
+    logger.info(s"Applying Filter Ranges: ${stkFilterRanges.size}")
+    applyFilterRanges(df, stkFilterRanges)
   }
+
+  def readRasterRowsCols(path: String, keyBounds: KeyBounds[SpaceTimeKey],
+    rasterMetaData: RasterMetaData, polygon: Polygon)(implicit sqlContext: SQLContext): DataFrame = {
+
+    // Create filterset for grid bounds
+    logger.info("Getting Grid Bounds")
+    val filterGridBounds = rasterMetaData.mapTransform(polygon.envelope)
+
+    logger.info("ConstructingFilterSet")
+    val df = sqlContext.load(path, "parquet")
+
+    df.filter(df("row") <= filterGridBounds.rowMax)
+      .filter(df("row") >= filterGridBounds.rowMin)
+      .filter(df("col") <= filterGridBounds.colMax)
+      .filter(df("col") >= filterGridBounds.colMin)
+  }
+
 
   def readSpaceTimeKeys(path: String, filterRanges: Seq[(Long, Long)]):
       RasterRDD[(SpaceTimeKey, Tile)] = ???
@@ -133,6 +169,39 @@ object ParquetRasterReader {
       RasterRDD[(SpaceTimeKey, Tile)] = ???
 
 }
+
+object ReadTimings extends LazyLogging {
+
+  import Extents._
+
+  def testReads(p: String)(implicit sqlContext: SQLContext): Unit = {
+
+    val mdPath = s"$p/rasterMetaData"
+    val rasterPath = s"$p/rasterData"
+
+    val md = ParquetRasterMetaDataReader.read(mdPath)
+    val (rmd, keyBounds) = md("one-month-test:8")
+
+    val ek = extents("USA")
+
+    Timer.timedTask("DFTEST: Loading Zcurve eastKansas", s => logger.info(s)) {
+      val zdf = ParquetRasterReader.readRasterZCurve(rasterPath, keyBounds, rmd, ek)
+      // val c = zdf.count
+      // logger.info(s"DFTEST: ZCURVE COUNT: $c")
+    }
+
+    // Timer.timedTask("DFTEST: Loading Row & Column eastKansas", s => logger.info(s)) {
+    //   val zdf = ParquetRasterReader.readRasterRowsCols(rasterPath, keyBounds, rmd, ek)
+    //   val c = zdf.count
+    //   zdf.rdd.first
+    //   logger.info(s"DFTEST: ROW & COLUMN COUNT: $c")
+    // }
+
+  }
+
+}
+
+
 
 case class TileCell(tileRow: Integer, tileCol: Integer, timeMillis: Long,
   row: Integer, col: Integer, value: Double)
@@ -200,9 +269,11 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
       val rasterDFBinary = rasterRdd.map{case (k, t) =>
         val bytes = KryoSerializer.serialize[Tile](t)
         TileRow(k.row, k.col, k.time.getMillis, keyIndex.toIndex(k), bytes)
-      }.toDF().orderBy("zIndex")
+      }.toDF().coalesce(20).orderBy("zIndex")
+      val numObs = rasterDFBinary.count()
+      logger.info(s"NUMBER OF OBSERVATIONS: $numObs")
       val climateRasterOutStr = s"$baseOutput/rasterData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-      rasterDFBinary.save(climateRasterOutStr, "parquet")
+      rasterDFBinary.write.format("parquet").save(climateRasterOutStr)
     }
 
     // Timer.timedTask("Saving Raster Cell DataFrame: STK", s => logger.info(s)) {
