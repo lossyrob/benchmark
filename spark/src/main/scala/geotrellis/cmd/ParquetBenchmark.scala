@@ -207,11 +207,9 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
 
   def main(args: ParquetBenchmarkArgs): Unit = {
     implicit val sparkContext = SparkUtils.createSparkContext("Benchmark")
-    implicit val sqlContext = new org.apache.spark.sql.SQLContext(sparkContext)
-    val hiveContext = new HiveContext(sparkContext)
+    implicit val sqlContext = new HiveContext(sparkContext)
 
     import sqlContext.implicits._
-    import hiveContext.implicits._
 
     sparkContext.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
       "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
@@ -254,19 +252,25 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
         result.write.format("parquet").save(s"$rootPath/subtract/layerName=$name/")
 
         logger.info(s"COUNT: ${result.count}")
+      }
+      Timer.timedTask(s"""Benchmark: {type: Average Yearly, name: $name}""", s=> logger.info(s)) {
+        val df1 = getDataFrame(args.input, layer1, polygon)
+        val df2 = getDataFrame(args.input, layer2, polygon)
 
-        Timer.timedTask(s"""Benchmark: {type: Average Yearly, name: $name}""", s=> logger.info(s)) {
-          val df1 = getDataFrame(args.input, layer1, polygon)
-          val df2 = getDataFrame(args.input, layer2, polygon)
+        val dfunion = df1.unionAll(df2)
+        dfunion.registerTempTable("df1")
 
-          val dfunion = df1.unionAll(df2)
-          dfunion.registerTempTable("df1")
+        sqlContext.udf.register("averageTiles", (arrayTileBytes: mutable.ArrayBuffer[Array[Byte]]) => {
+          val tiles = arrayTileBytes.map(t => KryoSerializer.deserialize[Tile](t))
+          val startTile = tiles.head
+          val sumTile = tiles.tail.foldLeft(startTile)(_ + _)
+          val averageTile = sumTile / tiles.length
+          KryoSerializer.serialize[Tile](averageTile)
+        })
 
-          dfunion.write.format("parquet").save(s"$rootPath/union/union.parquet")
+        val result = sqlContext.sql("""select tileRow, tileCol, averageTiles(collect_set(df1.tile)) from df1 GROUP BY tileRow, tileCol, year""")
 
-          val result = hiveContext.sql("""select tileRow, tileCol, collect_list(tile) from df1 GROUP BY tileRow, tileCol, year""")
-          result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
-        }
+        result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
       }
     }
   }
