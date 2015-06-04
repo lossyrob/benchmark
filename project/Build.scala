@@ -107,6 +107,7 @@ object BenchmarkBuild extends Build {
         "com.google.code.caliper" % "caliper" % "1.0-SNAPSHOT" from "http://plastic-idolatry.com/jars/caliper-1.0-SNAPSHOT.jar",
         "org.apache.spark" %% "spark-core" % Version.spark % "provided",
         "org.apache.spark" %% "spark-sql" % Version.spark % "provided",
+        "org.apache.spark" %% "spark-hive" % Version.spark % "provided",
         "com.google.guava" % "guava" % "r09",
         "com.google.code.java-allocation-instrumenter" % "java-allocation-instrumenter" % "2.0",
         "com.google.code.gson" % "gson" % "1.7.1"

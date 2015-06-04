@@ -36,7 +36,7 @@ import spray.json._
 import geotrellis.spark.io.json._
 import DefaultJsonProtocol._
 import geotrellis.spark.utils.{SparkUtils, KryoSerializer}
-
+import org.apache.spark.sql.hive.HiveContext
 import geotrellis.raster.op.local._
 
 object ParquetRasterMetaDataReader {
@@ -208,8 +208,10 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
   def main(args: ParquetBenchmarkArgs): Unit = {
     implicit val sparkContext = SparkUtils.createSparkContext("Benchmark")
     implicit val sqlContext = new org.apache.spark.sql.SQLContext(sparkContext)
+    val hiveContext = new HiveContext(sparkContext)
 
     import sqlContext.implicits._
+    import hiveContext.implicits._
 
     sparkContext.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
       "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
@@ -219,6 +221,8 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
     for {
       (name, polygon) <- extents
     } {
+
+      val rootPath = "/home/cbrown/Documents/test-tifs"
 
       Timer.timedTask(s"""Benchmark: {type: Count 2 Layers, name: $name""", s=> logger.info(s)) {
         val df1 = getDataFrame(args.input, layer1, polygon)
@@ -242,11 +246,27 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
             val tile2 = KryoSerializer.deserialize[Tile](tile2bytes)
             val subtractedTiles = tile1 - tile2
             val subtractTilesBytes = KryoSerializer.serialize[Tile](subtractedTiles)
+            subtractTilesBytes
           })
         val result = sqlContext.sql("""SELECT df1.tileRow, df1.tileCol, subtractTiles(df1.tile, df2.tile) as tile
                         from df1, df2 WHERE df1.coords = df2.coords""")
+
+        result.write.format("parquet").save(s"$rootPath/subtract/layerName=$name/")
+
         logger.info(s"COUNT: ${result.count}")
 
+        Timer.timedTask(s"""Benchmark: {type: Average Yearly, name: $name}""", s=> logger.info(s)) {
+          val df1 = getDataFrame(args.input, layer1, polygon)
+          val df2 = getDataFrame(args.input, layer2, polygon)
+
+          val dfunion = df1.unionAll(df2)
+          dfunion.registerTempTable("df1")
+
+          dfunion.write.format("parquet").save(s"$rootPath/union/union.parquet")
+
+          val result = hiveContext.sql("""select tileRow, tileCol, collect_list(tile) from df1 GROUP BY tileRow, tileCol, year""")
+          result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
+        }
       }
     }
   }
