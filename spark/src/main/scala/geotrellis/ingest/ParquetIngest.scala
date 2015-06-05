@@ -110,7 +110,7 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
         val bytes = KryoSerializer.serialize[Tile](t)
         TileRow(k.row, k.col, (k.row, k.col), k.time.getYear, k.time.getMonthOfYear,
           k.time.getDayOfMonth, k.time.getMillis, keyIndex.toIndex(k), bytes)
-      }.toDF().coalesce(20).orderBy("zIndex")
+      }.toDF().coalesce(500).orderBy("zIndex")
       val numObs = rasterDFBinary.count()
       logger.info(s"NUMBER OF OBSERVATIONS: $numObs")
       val climateRasterOutStr = s"$baseOutput/rasterData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
@@ -131,8 +131,9 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
 
     sc.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
       "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
-    sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
-    sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
+    sc.hadoopConfiguration.set("fs.defaultFS", "s3a://nex-parquet.azavea.com")
+    // sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
+    // sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
 
     ingestSpaceTimeKey(sc, sqlContext, args)
   }

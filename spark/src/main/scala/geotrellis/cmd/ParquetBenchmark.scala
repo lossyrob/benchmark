@@ -249,10 +249,11 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
         val result = sqlContext.sql("""SELECT df1.tileRow, df1.tileCol, subtractTiles(df1.tile, df2.tile) as tile
                         from df1, df2 WHERE df1.coords = df2.coords""")
 
-        result.write.format("parquet").save(s"$rootPath/subtract/layerName=$name/")
+        // result.write.format("parquet").save(s"$rootPath/subtract/layerName=$name/")
 
         logger.info(s"COUNT: ${result.count}")
       }
+
       Timer.timedTask(s"""Benchmark: {type: Average Yearly, name: $name}""", s=> logger.info(s)) {
         val df1 = getDataFrame(args.input, layer1, polygon)
         val df2 = getDataFrame(args.input, layer2, polygon)
@@ -269,9 +270,10 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
         })
 
         val result = sqlContext.sql("""select tileRow, tileCol, averageTiles(collect_set(df1.tile)) from df1 GROUP BY tileRow, tileCol, year""")
-
-        result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
+        logger.info(s"YEARLY AVERAGE COUNT: ${result.count}")
+        // result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
       }
+
     }
   }
 }

@@ -8,7 +8,7 @@ import boto
 env.user = 'ubuntu'
 
 # env.host_string = 'ec2-52-7-137-13.compute-1.amazonaws.com'  # 2 instances
-env.host_string = 'ec2-52-6-47-42.compute-1.amazonaws.com' # 4 instances
+env.host_string = 'ec2-54-152-14-21.compute-1.amazonaws.com' # 4 instances
 
 env.key_filename = '/home/cbrown/.ssh/geotrellis-spark-us-east-1.pem'
 
