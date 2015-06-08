@@ -16,7 +16,7 @@ import geotrellis.spark.ingest._
 import geotrellis.spark.cmd.args._
 import geotrellis.spark.io.hadoop._
 import geotrellis.spark.utils.{SparkUtils, KryoSerializer}
-import geotrellis.raster.io.geotiff.reader._
+import geotrellis.raster.io.geotiff._
 import geotrellis.raster._
 import geotrellis.vector._
 import geotrellis.proj4._
@@ -72,12 +72,10 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
     val baseOutput = s"${args.output}/spacetime/"
 
     val sourceTiles = sc.binaryFiles(args.input).map{ case(inputKey, b) =>
-      val geoTiff = GeoTiffReader.read(b.toArray)
-      val meta = geoTiff.metaData
-      val isoString = geoTiff.tags("ISO_TIME")
+      val geoTiff = SingleBandGeoTiff(b.toArray)
+      val isoString = geoTiff.tags.headTags("ISO_TIME")
       val dateTime = DateTime.parse(isoString)
-      val GeoTiffBand(tile, extent, crs, _) = geoTiff.bands.head
-      (SpaceTimeInputKey(extent, crs, dateTime), tile)
+      (SpaceTimeInputKey(geoTiff.extent, geoTiff.crs, dateTime), geoTiff.tile)
     }
 
     val destCrs = args.destCrs

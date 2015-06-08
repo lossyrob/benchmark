@@ -26,8 +26,8 @@ object BenchmarkBuild extends Build {
     "maven2 dev repository"   at "http://download.java.net/maven/2",
     "Typesafe Repo"           at "http://repo.typesafe.com/typesafe/releases/",
     "spray repo"              at "http://repo.spray.io/",
-    "sonatypeSnapshots"       at "http://oss.sonatype.org/content/repositories/snapshots",
-    "sparksnapshots" at "https://repository.apache.org/content/repositories/snapshots/org/apache/spark/"
+    "sonatypeSnapshots"       at "http://oss.sonatype.org/content/repositories/snapshots"
+    // "sparksnapshots" at "https://repository.apache.org/content/repositories/snapshots/org/apache/spark/"
   )
 
   // Default settings
