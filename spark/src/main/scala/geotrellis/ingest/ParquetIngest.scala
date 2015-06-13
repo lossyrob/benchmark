@@ -31,20 +31,31 @@ import org.apache.spark.storage.StorageLevel
 
 import spray.json._
 import DefaultJsonProtocol._
+import scala.math._
 
 import scala.collection.mutable._
 import spire.syntax.cfor._
-import org.apache.spark.sql.{SQLContext, Row, DataFrame}
+import org.apache.spark.sql.{SQLContext, Row, DataFrame, SaveMode}
 
 
-case class TileRow(tileRow: Integer, tileCol:Integer, coords: (Integer, Integer),
+case class TileRow(zoomLevel: Integer, layerName: String, rowGroup: Integer, colGroup: Integer,
+  tileRow: Integer, tileCol:Integer,
+  coords: (Integer, Integer),
   year: Integer, month: Integer, day: Integer, timeMillis: Long,
   zIndex: Long, tile: Array[Byte])
 
-case class RMD(rasterMetaData: String, keyBounds: String)
+case class TileRowSmall(rowGroup: Integer, colGroup: Integer,
+  tileRow: Integer, tileCol:Integer,
+  coords: (Integer, Integer),
+  year: Integer, month: Integer, day: Integer, timeMillis: Long,
+  zIndex: Long, tile: Array[Byte])
+
+
+case class RMD(zoomLevel: Integer, layerName: String, rasterMetaData: String, keyBounds: String)
 
 class ParquetArgs extends IngestArgs {
   @Required var output: String = _
+  @Required var parquetpartitions: Integer = _
 }
 
 object ParquetRasterMetaDataReader {
@@ -76,7 +87,7 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
       val isoString = geoTiff.tags.headTags("ISO_TIME")
       val dateTime = DateTime.parse(isoString)
       (SpaceTimeInputKey(geoTiff.extent, geoTiff.crs, dateTime), geoTiff.tile)
-    }
+    }.coalesce(args.parquetpartitions)
 
     val destCrs = args.destCrs
 
@@ -90,7 +101,6 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
       }
 
     val rasterRdd = SpaceTimeInputKey.tiler(reprojectedTiles, rasterMetaData)
-    rasterRdd.persist(StorageLevel.MEMORY_AND_DISK)
     val keyBounds = implicitly[Boundable[SpaceTimeKey]].getKeyBounds(rasterRdd)
     val keyIndexMethod = ZCurveKeyIndexMethod.by( (d: DateTime) => 0)
 
@@ -103,35 +113,59 @@ object ParquetIngest extends ArgMain[ParquetArgs] with LazyLogging {
 
     val layerId = LayerId(args.layerName, 8)
 
-    Timer.timedTask("Saving Parquet Raster Tiles: STK", s => logger.info(s)) {
+    Timer.timedTask("Saving Parquet Raster Tiles: (PartitionBy)", s => logger.info(s)) {
       val rasterDFBinary = rasterRdd.map{case (k, t) =>
         val bytes = KryoSerializer.serialize[Tile](t)
-        TileRow(k.row, k.col, (k.row, k.col), k.time.getYear, k.time.getMonthOfYear,
-          k.time.getDayOfMonth, k.time.getMillis, keyIndex.toIndex(k), bytes)
-      }.toDF().coalesce(500).orderBy("zIndex")
-      val numObs = rasterDFBinary.count()
-      logger.info(s"NUMBER OF OBSERVATIONS: $numObs")
-      val climateRasterOutStr = s"$baseOutput/rasterData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-      rasterDFBinary.write.format("parquet").save(climateRasterOutStr)
+
+        val rowGroup  = (k.row / 10) * 10
+        val colGroup = (k.col / 10) * 10
+
+        TileRow(layerId.zoom, layerId.name, rowGroup, colGroup, k.row, k.col, (k.row, k.col), k.time.getYear,
+          k.time.getMonthOfYear, k.time.getDayOfMonth, k.time.getMillis, keyIndex.toIndex(k), bytes)
+      }.toDF().coalesce(800)
+
+      val climateRasterOutStr = s"$baseOutput/rasterData/partitionBy/"
+      logger.info(s"OUTPUT: $climateRasterOutStr")
+      rasterDFBinary.write.partitionBy("zoomLevel", "layerName", "rowGroup", "colGroup").mode("append").parquet(climateRasterOutStr)
+    }
+
+    Timer.timedTask("Saving Parquet Raster Tiles: (ManualPartitions)", s => logger.info(s)) {
+      val rasterDFBinary = rasterRdd.map{case (k, t) =>
+        val bytes = KryoSerializer.serialize[Tile](t)
+
+        val rowGroup  = (k.row / 10) * 10
+        val colGroup = (k.col / 10) * 10
+
+        TileRowSmall(rowGroup, colGroup, k.row, k.col, (k.row, k.col), k.time.getYear,
+          k.time.getMonthOfYear, k.time.getDayOfMonth, k.time.getMillis, keyIndex.toIndex(k), bytes)
+      }.toDF()
+
+      val climateRasterOutStr = s"$baseOutput/rasterData/manualPartition/zoomLevel=${layerId.zoom}/layerName=${layerId.name}"
+      logger.info(s"OUTPUT: $climateRasterOutStr")
+      rasterDFBinary.write.mode("append").parquet(climateRasterOutStr)
     }
 
     Timer.timedTask("Saving RasterMetaData: STK", s => logger.info(s)) {
-      val climateRMDOutStr = s"$baseOutput/rasterMetaData/zoomLevel=${layerId.zoom}/layerName=${layerId.name}/"
-      val rmdDF = sc.parallelize(Seq(RMD(rasterMetaData.toJson.toString, keyBounds.toJson.toString))).toDF()
-      rmdDF.save(climateRMDOutStr, "parquet")
+      val climateRMDOutStr = s"$baseOutput/rasterMetaData"
+      val rmdDF = sc.parallelize(Seq(RMD(layerId.zoom, layerId.name, rasterMetaData.toJson.toString, keyBounds.toJson.toString))).toDF()
+      rmdDF.write.partitionBy("zoomLevel", "layerName").mode("append").parquet(climateRMDOutStr)
     }
   }
 
   def main(args: ParquetArgs): Unit = {
 
     val sc = SparkUtils.createSparkContext("Parquet-Ingest")
+
+    sc.hadoopConfiguration.set("fs.s3a.access.key", "")
+    sc.hadoopConfiguration.set("fs.s3a.secret.key", "")
+    sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
+    sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
+    sc.hadoopConfiguration.set("fs.defaultFS", "s3n://nex-parquet.spark.azavea.com")
+
     val sqlContext = new org.apache.spark.sql.SQLContext(sc)
 
     sc.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
       "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
-    sc.hadoopConfiguration.set("fs.defaultFS", "s3a://nex-parquet.azavea.com")
-    // sc.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "")
-    // sc.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "")
 
     ingestSpaceTimeKey(sc, sqlContext, args)
   }

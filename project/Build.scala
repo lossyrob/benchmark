@@ -108,6 +108,7 @@ object BenchmarkBuild extends Build {
         "org.apache.spark" %% "spark-core" % Version.spark % "provided",
         "org.apache.spark" %% "spark-sql" % Version.spark % "provided",
         "org.apache.spark" %% "spark-hive" % Version.spark % "provided",
+        "org.apache.hadoop" % "hadoop-aws" % "2.6.0",
         "com.google.guava" % "guava" % "r09",
         "com.google.code.java-allocation-instrumenter" % "java-allocation-instrumenter" % "2.0",
         "com.google.code.gson" % "gson" % "1.7.1"

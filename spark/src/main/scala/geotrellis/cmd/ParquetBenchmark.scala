@@ -19,6 +19,8 @@ import geotrellis.vector.reproject._
 import org.apache.accumulo.core.client.security.tokens.PasswordToken
 import org.apache.hadoop.fs.Path
 import org.apache.spark._
+import geotrellis.spark.utils.{SparkUtils, KryoSerializer}
+import geotrellis.spark.io.hadoop.KryoRegistrator
 import geotrellis.vector.io.json._
 import geotrellis.spark.op.zonal.summary._
 import geotrellis.raster.op.zonal.summary._
@@ -27,21 +29,20 @@ import com.github.nscala_time.time.Imports._
 import geotrellis.raster.op.local
 import geotrellis.raster._
 import com.typesafe.scalalogging.slf4j.LazyLogging
-import org.apache.spark.SparkContext._
 import com.github.nscala_time.time.Imports._
 import geotrellis.spark.op.local._
 import org.apache.spark.sql.{SQLContext, Row, DataFrame}
-
+import org.apache.spark.storage.StorageLevel
 import spray.json._
 import geotrellis.spark.io.json._
 import DefaultJsonProtocol._
-import geotrellis.spark.utils.{SparkUtils, KryoSerializer}
 import org.apache.spark.sql.hive.HiveContext
 import geotrellis.raster.op.local._
+import scala.math._
 
 object ParquetRasterMetaDataReader {
 
-  def read(path: String)(implicit sqlContext: SQLContext): scala.collection.Map[String,
+  def read(path: String, sqlContext: SQLContext): scala.collection.Map[String,
     (RasterMetaData, KeyBounds[SpaceTimeKey])] = {
 
     val rasterMetaDataRDD = sqlContext.load(path, "parquet").rdd.map{ case Row(rmd, kb, zoomLevel, layerName) =>
@@ -53,9 +54,9 @@ object ParquetRasterMetaDataReader {
     rasterMetaDataRDD.collectAsMap
   }
 
-  def readLayerMetaData(path: String, layerId: LayerId)(implicit sqlContext: SQLContext):
+  def readLayerMetaData(path: String, layerId: LayerId, sqlContext: SQLContext):
       (RasterMetaData, KeyBounds[SpaceTimeKey]) = {
-    val metaData = read(path)
+    val metaData = read(path, sqlContext)
     val metaDataKey = s"${layerId.name}:${layerId.zoom}"
     metaData(metaDataKey)
   }
@@ -137,20 +138,30 @@ object ParquetRasterReader extends LazyLogging {
     applyFilterRanges(df, stkFilterRanges)
   }
 
-  def readRasterRowsCols(path: String, layerId: LayerId,
-    rasterMetaData: RasterMetaData, polygon: Polygon)(implicit sqlContext: SQLContext): DataFrame = {
+  def getGroup(i: Integer): Integer = {
+    (i / 10) * 10
+  }
+
+  def readRasterRowsCols(df: DataFrame, layerId: LayerId,
+    rasterMetaData: RasterMetaData, polygon: Polygon): DataFrame = {
 
     // Create filterset for grid bounds
     logger.info("Getting Grid Bounds")
     val filterGridBounds = rasterMetaData.mapTransform(polygon.envelope)
 
-    logger.info("ConstructingFilterSet")
-    val df = sqlContext.load(path, "parquet")
+    val maxColGroup = getGroup(filterGridBounds.colMax)
+    val minColGroup = getGroup(filterGridBounds.colMin)
+    val maxRowGroup = getGroup(filterGridBounds.rowMax)
+    val minRowGroup = getGroup(filterGridBounds.rowMin)
 
     df.filter(df("tileRow") <= filterGridBounds.rowMax)
       .filter(df("tileRow") >= filterGridBounds.rowMin)
       .filter(df("tileCol") <= filterGridBounds.colMax)
       .filter(df("tileCol") >= filterGridBounds.colMin)
+      .filter(df("rowGroup") <= maxRowGroup)
+      .filter(df("rowGroup") >= minRowGroup)
+      .filter(df("colGroup") <= maxColGroup)
+      .filter(df("colGroup") >= minColGroup)
       .filter(df("layerName") === layerId.name)
   }
 
@@ -177,17 +188,19 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
   import Extents._
 
   def getDataFrame(
-    rootPath: String,
+    df: DataFrame,
     id: LayerId,
-    polygon: Polygon
-  )(implicit sqlContext: SQLContext): DataFrame = {
-    val metaDataPath = s"$rootPath/rasterMetaData"
-    val (rmd, keyBounds) = ParquetRasterMetaDataReader.readLayerMetaData(metaDataPath, id)
+    polygon: Polygon,
+    metaData: org.apache.spark.broadcast.Broadcast[scala.collection.Map[String,
+        (RasterMetaData, KeyBounds[SpaceTimeKey])]]
+  ): DataFrame = {
+    val metaDataKey = s"${id.name}:${id.zoom}"
+    val (rmd, keyBounds) = metaData.value(metaDataKey)
     println(s"getRDD RMD: $rmd")
     val bounds = rmd.mapTransform(polygon.envelope)
-    val rasterDataPath = s"$rootPath/rasterData"
+
     println(s"getRDD GridBounds: $bounds")
-    ParquetRasterReader.readRasterRowsCols(rasterDataPath, id, rmd, polygon)
+    ParquetRasterReader.readRasterRowsCols(df, id, rmd, polygon)
   }
 
   def stats(rdd: RasterRDD[SpaceTimeKey]): String = {
@@ -206,26 +219,50 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
   }
 
   def main(args: ParquetBenchmarkArgs): Unit = {
-    implicit val sparkContext = SparkUtils.createSparkContext("Benchmark")
-    implicit val sqlContext = new HiveContext(sparkContext)
-
-    import sqlContext.implicits._
+    val sparkContext = SparkUtils.createSparkContext("Benchmark")
 
     sparkContext.hadoopConfiguration.set("spark.sql.parquet.output.committer.class",
       "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
 
+    // sparkContext.hadoopConfiguration.set("fs.defaultFS", "s3n://nex-parquet.spark.azavea.com")
+    // sparkContext.hadoopConfiguration.set("fs.s3n.awsAccessKeyId", "AKIAJOVCA22UTHU7HNXQ")
+    // sparkContext.hadoopConfiguration.set("fs.s3n.awsSecretAccessKey", "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")
+    sparkContext.hadoopConfiguration.set("fs.s3a.awsAccessKeyId", "AKIAJOVCA22UTHU7HNXQ")
+    sparkContext.hadoopConfiguration.set("fs.s3a.awsSecretAccessKey", "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")
+
+    val sqlContext = new SQLContext(sparkContext)
+
+    import sqlContext.implicits._
+
+    // sparkContext.hadoopConfiguration.set("fs.defaultFS", "s3a://nex-parquet.spark.azavea.com")
+
     val Array(layer1, layer2) = args.getLayers
+
+    val metaDataPath = s"${args.input}/rasterMetaData"
+
+    val metaDatavalue = ParquetRasterMetaDataReader.read(metaDataPath, sqlContext)
+    val metaData = sparkContext.broadcast(metaDatavalue)
+
+    val rasterDataPath = s"${args.input}/rasterData"
+    logger.info(s"RASTERDATA: $rasterDataPath")
+    val df = sqlContext.load(rasterDataPath, "parquet")
+
 
     for {
       (name, polygon) <- extents
     } {
+      val df1 = getDataFrame(df, layer1, polygon, metaData)
+      df1.persist(StorageLevel.MEMORY_AND_DISK)
+      val df2 = getDataFrame(df, layer2, polygon, metaData)
+      df2.persist(StorageLevel.MEMORY_AND_DISK)
+      df1.registerTempTable("df1")
+      df2.registerTempTable("df2")
+
+      val dfunion = df1.unionAll(df2)
+      dfunion.registerTempTable("dfunion")
 
       val rootPath = "/home/cbrown/Documents/test-tifs"
-
       Timer.timedTask(s"""Benchmark: {type: Count 2 Layers, name: $name""", s=> logger.info(s)) {
-        val df1 = getDataFrame(args.input, layer1, polygon)
-        val df2 = getDataFrame(args.input, layer2, polygon)
-
         val x = df1.count()
         val y = df2.count()
         logger.info(s"LAYER: $name, COUNT: $x")
@@ -233,10 +270,6 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
       }
 
       Timer.timedTask(s"""Benchmark: {type: Join 2 Layers, name: $name}""", s=> logger.info(s)) {
-        val df1 = getDataFrame(args.input, layer1, polygon)
-        val df2 = getDataFrame(args.input, layer2, polygon)
-        df1.registerTempTable("df1")
-        df2.registerTempTable("df2")
 
         sqlContext.udf.register("subtractTiles",
           (tile1bytes: Array[Byte], tile2bytes: Array[Byte]) => {
@@ -255,11 +288,6 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
       }
 
       Timer.timedTask(s"""Benchmark: {type: Average Yearly, name: $name}""", s=> logger.info(s)) {
-        val df1 = getDataFrame(args.input, layer1, polygon)
-        val df2 = getDataFrame(args.input, layer2, polygon)
-
-        val dfunion = df1.unionAll(df2)
-        dfunion.registerTempTable("df1")
 
         sqlContext.udf.register("averageTiles", (arrayTileBytes: mutable.ArrayBuffer[Array[Byte]]) => {
           val tiles = arrayTileBytes.map(t => KryoSerializer.deserialize[Tile](t))
@@ -269,7 +297,7 @@ object ParquetBenchmark extends ArgMain[ParquetBenchmarkArgs] with LazyLogging {
           KryoSerializer.serialize[Tile](averageTile)
         })
 
-        val result = sqlContext.sql("""select tileRow, tileCol, averageTiles(collect_set(df1.tile)) from df1 GROUP BY tileRow, tileCol, year""")
+        val result = sqlContext.sql("""select tileRow, tileCol from dfunion GROUP BY tileRow, tileCol, year""")
         logger.info(s"YEARLY AVERAGE COUNT: ${result.count}")
         // result.write.format("parquet").save(s"$rootPath/yearlyAvg/layerName=$name/")
       }
