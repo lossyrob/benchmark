@@ -91,12 +91,13 @@ object Benchmark extends ArgMain[BenchmarkArgs] with LazyLogging {
     polygon: Polygon,
     name: String
   ): RasterRDD[SpaceTimeKey] = {
-    val lmd = catalog.accumuloAttributeStore.read[AccumuloLayerMetaData](id, "metadata")
+    val lmd = catalog.attributeStore.read[AccumuloLayerMetaData](id, "metadata")
     val rmd = lmd.rasterMetaData
     println(s"getRDD RMD: $rmd")
     val bounds = rmd.mapTransform(polygon.envelope)
     println(s"getRDD GridBounds: $bounds")
-    val rdd = catalog.reader[SpaceTimeKey].read(id, FilterSet(SpaceFilter[SpaceTimeKey](bounds)))
+    // val rdd = catalog.read[SpaceTimeKey].read(id, FilterSet(SpaceFilter[SpaceTimeKey](bounds)))
+    val rdd = catalog.query[SpaceTimeKey](id).where(Intersects(bounds)).toRDD
     rdd.setName(name)
     rdd
   }
