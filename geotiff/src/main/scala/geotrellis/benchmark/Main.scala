@@ -72,11 +72,13 @@ trait GeoTiffReadBenchmark extends SimpleBenchmark {
 
   @inline
   final def readNative(path: String) =
-    geotrellis.raster.io.geotiff.reader.GeoTiffReader.read(path)
+    geotrellis.raster.io.geotiff.reader.GeoTiffReader.readMultiBand(path)
+    // geotrellis.raster.io.geotiff.reader.GeoTiffReader.read(path)
 
   @inline
   final def readGeoTools(path: String) =
-    geotrellis.geotools.GeoTiffReader.read(path)
+    geotrellis.raster.io.geotiff.reader.GeoTiffReader.readMultiBand(path)
+    // geotrellis.geotools.GeoTiffReader.read(path)
 }
 
 object ReadLargeUncompressed extends BenchmarkRunner(classOf[ReadLargeUncompressed])
@@ -240,7 +242,7 @@ object RasterReadProfile {
     var i = 1
     while(true) {
       println(s"Reading $i...")
-      val x = geotrellis.raster.io.geotiff.reader.GeoTiffReader.read(path).bands.head
+      val x = geotrellis.raster.io.geotiff.reader.GeoTiffReader.readMultiBand(path).tile.bandCount
       println(s"  got $x")
       i += 1
     }

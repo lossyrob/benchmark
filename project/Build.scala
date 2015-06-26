@@ -102,6 +102,8 @@ object BenchmarkBuild extends Build {
       scalaVersion := Version.scala,
 
       libraryDependencies ++= Seq(
+        "com.azavea.geotrellis" %% "geotrellis-raster" % Version.geotrellis,
+        "com.azavea.geotrellis" %% "geotrellis-gdal" % Version.geotrellis,
         "com.azavea.geotrellis" %% "geotrellis-spark" % Version.geotrellis,
         "com.google.code.caliper" % "caliper" % "1.0-SNAPSHOT" from "http://plastic-idolatry.com/jars/caliper-1.0-SNAPSHOT.jar",
         "org.apache.spark" %% "spark-core" % Version.spark % "provided",
@@ -137,7 +139,8 @@ object BenchmarkBuild extends Build {
         "com.google.code.java-allocation-instrumenter" % "java-allocation-instrumenter" % "2.0",
         "com.google.code.gson" % "gson" % "1.7.1",
         "com.azavea.geotrellis" %% "geotrellis-gdal" % Version.geotrellis,
-        "com.azavea.geotrellis" %% "geotrellis-geotools" % Version.geotrellis
+        "com.azavea.geotrellis" %% "geotrellis-geotools" % Version.geotrellis,
+        "com.azavea.geotrellis" %% "geotrellis-raster" % Version.geotrellis
       ),
 
 
