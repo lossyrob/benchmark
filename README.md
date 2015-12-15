@@ -1,4 +1,8 @@
-# Benchmarking GeoTrellis
+# NOTE: THIS IS DEPRECATED/DEFUNCT.
+
+Check out [geotrellis-benchmark](https://github.com/geotrellis/geotrellis-benchmark)
+
+## Benchmarking GeoTrellis
 Project for benchmarking GeoTrellis.
 
 ### Setting up a benchmarking environment with vagrant and ansible.
