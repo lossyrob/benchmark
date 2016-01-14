@@ -12,7 +12,7 @@ object Version {
 
   val geotrellis  = "0.10.0-SNAPSHOT"
   val scala       = "2.10.4"
-  val spark       = "1.2.1"
+  val spark       = "1.4.0-SNAPSHOT"
 }
 
 object BenchmarkBuild extends Build {
@@ -27,6 +27,7 @@ object BenchmarkBuild extends Build {
     "Typesafe Repo"           at "http://repo.typesafe.com/typesafe/releases/",
     "spray repo"              at "http://repo.spray.io/",
     "sonatypeSnapshots"       at "http://oss.sonatype.org/content/repositories/snapshots"
+    // "sparksnapshots" at "https://repository.apache.org/content/repositories/snapshots/org/apache/spark/"
   )
 
   // Default settings
@@ -107,6 +108,9 @@ object BenchmarkBuild extends Build {
         "com.azavea.geotrellis" %% "geotrellis-spark" % Version.geotrellis,
         "com.google.code.caliper" % "caliper" % "1.0-SNAPSHOT" from "http://plastic-idolatry.com/jars/caliper-1.0-SNAPSHOT.jar",
         "org.apache.spark" %% "spark-core" % Version.spark % "provided",
+        "org.apache.spark" %% "spark-sql" % Version.spark % "provided",
+        "org.apache.spark" %% "spark-hive" % Version.spark % "provided",
+        "org.apache.hadoop" % "hadoop-aws" % "2.6.0",
         "com.google.guava" % "guava" % "r09",
         "com.google.code.java-allocation-instrumenter" % "java-allocation-instrumenter" % "2.0",
         "com.google.code.gson" % "gson" % "1.7.1"
